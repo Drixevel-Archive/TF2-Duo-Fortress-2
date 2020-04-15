@@ -3,8 +3,9 @@
 //#define DEBUG
 
 #include <sourcemod>
-#include <sourcemod-misc>
-#include <sourcemod-colors>
+#include <misc-sm>
+#include <misc-tf>
+#include <misc-colors>
 #include <sdktools>
 #include <tf2_stocks>
 #include <sdkhooks>
@@ -393,7 +394,7 @@ public void RequestFrame_SpawnLogic(any data)
 				char classname[64];
 				TF2Econ_GetItemClassName(index, classname, sizeof(classname));
 				
-				int new_weapon = TF2_GiveWeapon(spectator, classname, index);
+				int new_weapon = TF2_GiveItem(spectator, classname, index);
 				
 				int m_iPrimaryAmmoType = GetEntProp(weapon, Prop_Send, "m_iPrimaryAmmoType");
 				int m_iSecondaryAmmoType = GetEntProp(weapon, Prop_Send, "m_iSecondaryAmmoType");
