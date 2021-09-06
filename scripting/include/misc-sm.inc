@@ -2897,7 +2897,7 @@ stock int SetEntityName(int entity, const char[] name)
 
 stock int FindEntityByName(const char[] name, const char[] classname = "*")
 {
-	int entity = -1; char temp[64];
+	int entity = -1; char temp[256];
 	while ((entity = FindEntityByClassname(entity, classname)) != -1)
 	{
 		GetEntPropString(entity, Prop_Data, "m_iName", temp, sizeof(temp));

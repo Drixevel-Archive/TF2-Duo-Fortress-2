@@ -1,6 +1,5 @@
 #pragma semicolon 1
-
-//#define DEBUG
+#pragma newdecls required
 
 #include <sourcemod>
 #include <misc-sm>
@@ -14,13 +13,11 @@
 #include <tf2-weapons>
 #include <tf_econ_data>
 
-#pragma newdecls required
-
 #define PLUGIN_TAG "{blue}[{ancient}Duo{blue}]{default}"
 #define MAX_GROUPS 32
 
-ConVar hConVar_SwitchTime;
-ConVar hConVar_MaxPoints;
+ConVar convar_SwitchTime;
+ConVar convar_MaxPoints;
 
 enum TF2GameType
 {
@@ -37,29 +34,29 @@ TF2GameType g_MapType = TF2GameType_Generic;
 int iDuo_Points[MAX_GROUPS];
 int iDuo_Requester[MAX_GROUPS];
 int iDuo_Requested[MAX_GROUPS];
-Handle hDuo_Menu_Spectator[MAX_GROUPS];
+Menu hDuo_Menu_Spectator[MAX_GROUPS];
 Handle hDuo_Hud_Alive[MAX_GROUPS];
 int iDuo_Spectating[MAX_GROUPS];
 bool bDuo_IsInUse[MAX_GROUPS];
 int iDuo_SwitchTime[MAX_GROUPS];
 Handle hDuo_SwitchTimer[MAX_GROUPS];
 int iDuo_SpawnCache[MAX_GROUPS][2];
-Handle hCooldownArray[MAX_GROUPS];
+ArrayList hCooldownArray[MAX_GROUPS];
 
-Handle hStart;
+Menu hStart;
 bool bAllowJointeam[MAXPLAYERS + 1];
 bool bRemainFiring[MAXPLAYERS + 1];
 bool bRemainZoomed[MAXPLAYERS + 1];
 ArrayStack hQueueStack;
 
-Handle h_aDisplayNames;
-Handle h_tCost;
-Handle h_tType;
-Handle h_tIndex;
-Handle h_tName;
-Handle h_tValue;
-Handle h_tDuration;
-Handle h_tApply;
+ArrayList h_aDisplayNames;
+StringMap h_tCost;
+StringMap h_tType;
+StringMap h_tIndex;
+StringMap h_tName;
+StringMap h_tValue;
+StringMap h_tDuration;
+StringMap h_tApply;
 
 //Handle g_hSDKAddObject;
 Handle g_hSDKRemoveObject;
@@ -74,20 +71,20 @@ bool InAttack[MAXPLAYERS + 1];
 public Plugin myinfo = 
 {
 	name = "Duo Fortress 2", 
-	author = "Keith Warren (Shaders Allen)", 
+	author = "Drixevel", 
 	description = "Allows clients to duo in matches to grant powerups and other buffs.", 
 	version = "1.0.0", 
-	url = "http://www.shadersallen.com/"
+	url = "https://drixevel.dev/"
 };
 
 public void OnPluginStart()
 {
 	//CSetPrefix("Duo");
-	hConVar_SwitchTime = CreateConVar("sm_duo_switchtime", "120");
-	HookConVarChange(hConVar_SwitchTime, OnConVarChange);
+	convar_SwitchTime = CreateConVar("sm_duo_switchtime", "120");
+	convar_SwitchTime.AddChangeHook(OnConVarChange);
 	
-	hConVar_MaxPoints = CreateConVar("sm_duo_maxpoints", "200");
-	HookConVarChange(hConVar_MaxPoints, OnConVarChange);
+	convar_MaxPoints = CreateConVar("sm_duo_maxpoints", "200");
+	convar_MaxPoints.AddChangeHook(OnConVarChange);
 	
 	RegConsoleCmd("sm_start", OpenStartMenu);
 	RegConsoleCmd("sm_details", OpenDetailsPanel);
@@ -108,32 +105,28 @@ public void OnPluginStart()
 	CreateTimer(8.0, GrantDuoTeamsPoint, _, TIMER_REPEAT);
 	CreateTimer(5.0, PairQueuePlayers, _, TIMER_REPEAT);
 	
-	h_aDisplayNames = CreateArray(ByteCountToCells(MAX_NAME_LENGTH));
-	h_tCost = CreateTrie();
-	h_tType = CreateTrie();
-	h_tIndex = CreateTrie();
-	h_tName = CreateTrie();
-	h_tValue = CreateTrie();
-	h_tDuration = CreateTrie();
-	h_tApply = CreateTrie();
+	h_aDisplayNames = new ArrayList(ByteCountToCells(MAX_NAME_LENGTH));
+	h_tCost = new StringMap();
+	h_tType = new StringMap();
+	h_tIndex = new StringMap();
+	h_tName = new StringMap();
+	h_tValue = new StringMap();
+	h_tDuration = new StringMap();
+	h_tApply = new StringMap();
 	
-	hQueueStack = CreateStack();
+	hQueueStack = new ArrayStack();
 	
 	for (int i = 1; i <= MaxClients; i++)
 	{
 		if (IsClientConnected(i))
-		{
 			OnClientConnected(i);
-		}
 		
 		if (IsClientInGame(i))
 		{
 			OnClientPutInServer(i);
 			
 			if (TF2_GetClientTeam(i) != TFTeam_Spectator)
-			{
 				TF2_ChangeClientTeam(i, TFTeam_Spectator);
-			}
 		}
 	}
 	
@@ -142,19 +135,15 @@ public void OnPluginStart()
 	StartPrepSDKCall(SDKCall_Player);
 	PrepSDKCall_SetFromConf(hConfig, SDKConf_Signature, "CTFPlayer::RemoveObject");
 	PrepSDKCall_AddParameter(SDKType_CBaseEntity, SDKPass_Pointer); //CBaseObject
-	if ((g_hSDKRemoveObject = EndPrepSDKCall()) == INVALID_HANDLE)
-	{
+	if ((g_hSDKRemoveObject = EndPrepSDKCall()) == null)
 		SetFailState("Failed To create SDKCall for CTFPlayer::RemoveObject signature");
-	}
 	
 	StartPrepSDKCall(SDKCall_Entity);
 	PrepSDKCall_SetFromConf(hConfig, SDKConf_Virtual, "CTFSniperRifle::ZoomIn");
-	if ((g_hSDKSniperZoom = EndPrepSDKCall()) == INVALID_HANDLE)
-	{
+	if ((g_hSDKSniperZoom = EndPrepSDKCall()) == null)
 		SetFailState("Failed To create SDKCall for CTFSniperRifle::ZoomIn signature");
-	}
 	
-	CloseHandle(hConfig);
+	delete hConfig;
 	
 	OffAW = FindSendPropInfo("CBasePlayer", "m_hActiveWeapon");
 }
@@ -169,29 +158,21 @@ public void OnConfigsExecuted()
 
 public void OnConVarChange(ConVar convar, const char[] oldValue, const char[] newValue)
 {
-	if (convar == hConVar_SwitchTime)
+	if (convar == convar_SwitchTime)
 	{
 		int timer = StringToInt(newValue);
 		
 		for (int i = 0; i < MAX_GROUPS; i++)
-		{
 			if (bDuo_IsInUse[i] && iDuo_SwitchTime[i] > timer)
-			{
 				iDuo_SwitchTime[i] = timer;
-			}
-		}
 	}
-	else if (convar == hConVar_MaxPoints)
+	else if (convar == convar_MaxPoints)
 	{
 		int points = StringToInt(newValue);
 		
 		for (int i = 0; i < MAX_GROUPS; i++)
-		{
 			if (bDuo_IsInUse[i] && iDuo_Points[i] > points)
-			{
 				iDuo_Points[i] = points;
-			}
-		}
 	}
 }
 
@@ -209,8 +190,6 @@ public void OnPluginEnd()
 		{
 			int alive = iDuo_Spectating[i] != iDuo_Requester[i] ? iDuo_Requester[i] : iDuo_Requested[i];
 			ClearSyncHud(alive, hDuo_Hud_Alive[i]);
-			CloseHandle(hDuo_Hud_Alive[i]);
-			hDuo_Hud_Alive[i] = null;
 		}
 	}
 }
@@ -230,10 +209,10 @@ public Action GrantDuoTeamsPoint(Handle timer)
 public void OnPlayerSpawn(Handle event, const char[] name, bool dontBroadcast)
 {
 	int client = GetClientOfUserId(GetEventInt(event, "userid"));
-	
 	int available = GetDuoID(client);
 	
-	RequestFrame(RequestFrame_SpawnLogic, available);
+	if (available != -1)
+		RequestFrame(RequestFrame_SpawnLogic, available);
 }
 
 public void RequestFrame_SpawnLogic(any data)
@@ -244,10 +223,8 @@ public void RequestFrame_SpawnLogic(any data)
 	int spectator = iDuo_SpawnCache[available][1];
 	
 	if (alive == 0 || spectator == 0)
-	{
 		return;
-	}
-	
+		
 	TFClassType class = TF2_GetPlayerClass(alive);
 	
 	int health = -1; int slot;
@@ -383,55 +360,55 @@ public void RequestFrame_SpawnLogic(any data)
 	
 	if (IsPlayerAlive(alive))
 	{
+		int weapon = -1;
 		for (int i = 0; i <= 5; i++)
 		{
-			int weapon = GetPlayerWeaponSlot(alive, i);
+			if ((weapon = GetPlayerWeaponSlot(alive, i)) == -1)
+				continue;
 			
-			if (weapon != -1)
+			int index = GetEntProp(weapon, Prop_Send, "m_iItemDefinitionIndex");
+			
+			char classname[64];
+			TF2Econ_GetItemClassName(index, classname, sizeof(classname));
+			
+			int new_weapon = TF2_GiveItem(spectator, classname, index);
+			
+			int m_iPrimaryAmmoType = GetEntProp(weapon, Prop_Send, "m_iPrimaryAmmoType");
+			int m_iSecondaryAmmoType = GetEntProp(weapon, Prop_Send, "m_iSecondaryAmmoType");
+			
+			if (m_iPrimaryAmmoType != -1)
 			{
-				int index = GetEntProp(weapon, Prop_Send, "m_iItemDefinitionIndex");
+				int clip = GetEntProp(weapon, Prop_Send, "m_iClip1");
+				SetEntProp(new_weapon, Prop_Send, "m_iClip1", clip);
 				
-				char classname[64];
-				TF2Econ_GetItemClassName(index, classname, sizeof(classname));
+				int ammo = GetEntProp(alive, Prop_Send, "m_iAmmo", _, m_iPrimaryAmmoType);
+				SetEntProp(spectator, Prop_Send, "m_iAmmo", ammo, _, m_iPrimaryAmmoType);
+			}
+			
+			if (m_iSecondaryAmmoType != -1)
+			{
+				int clip = GetEntProp(weapon, Prop_Send, "m_iClip2");
+				SetEntProp(new_weapon, Prop_Send, "m_iClip2", clip);
 				
-				int new_weapon = TF2_GiveItem(spectator, classname, index);
-				
-				int m_iPrimaryAmmoType = GetEntProp(weapon, Prop_Send, "m_iPrimaryAmmoType");
-				int m_iSecondaryAmmoType = GetEntProp(weapon, Prop_Send, "m_iSecondaryAmmoType");
-				
-				if (m_iPrimaryAmmoType != -1)
-				{
-					int clip = GetEntProp(weapon, Prop_Send, "m_iClip1");
-					SetEntProp(new_weapon, Prop_Send, "m_iClip1", clip);
-					
-					int ammo = GetEntProp(alive, Prop_Send, "m_iAmmo", _, m_iPrimaryAmmoType);
-					SetEntProp(spectator, Prop_Send, "m_iAmmo", ammo, _, m_iPrimaryAmmoType);
-				}
-				
-				if (m_iSecondaryAmmoType != -1)
-				{
-					int clip = GetEntProp(weapon, Prop_Send, "m_iClip2");
-					SetEntProp(new_weapon, Prop_Send, "m_iClip2", clip);
-					
-					int ammo = GetEntProp(alive, Prop_Send, "m_iAmmo", _, m_iSecondaryAmmoType);
-					SetEntProp(spectator, Prop_Send, "m_iAmmo", ammo, _, m_iSecondaryAmmoType);
-				}
-				
-				char sWeaponCurrent[64];
-				GetEdictClassname(new_weapon, sWeaponCurrent, sizeof(sWeaponCurrent));
-				
-				if (StrEqual(sWeaponCurrent, "tf_weapon_minigun") && bIsSlowed)
-				{
-					int iWeaponState = GetEntProp(weapon, Prop_Send, "m_iWeaponState");
-					SetEntProp(new_weapon, Prop_Send, "m_iWeaponState", iWeaponState);
-					
-					TF2_AddCondition(spectator, TFCond_Slowed, TFCondDuration_Infinite, spectator);
-					
-					bRemainFiring[spectator] = true;
-					CreateTimer(1.0, Timer_DisableAutoFire, spectator);
-				}
+				int ammo = GetEntProp(alive, Prop_Send, "m_iAmmo", _, m_iSecondaryAmmoType);
+				SetEntProp(spectator, Prop_Send, "m_iAmmo", ammo, _, m_iSecondaryAmmoType);
+			}
+
+			if (HasEntProp(weapon, Prop_Send, "m_iWeaponState"))
+				SetEntProp(new_weapon, Prop_Send, "m_iWeaponState", GetEntProp(weapon, Prop_Send, "m_iWeaponState"));
+			
+			char sWeaponCurrent[64];
+			GetEntityClassname(new_weapon, sWeaponCurrent, sizeof(sWeaponCurrent));
+			
+			if (StrEqual(sWeaponCurrent, "tf_weapon_minigun") && GetClientButtons(alive) & IN_ATTACK)
+			{
+				bRemainFiring[spectator] = true;
+				CreateTimer(1.0, Timer_DisableAutoFire, spectator);
 			}
 		}
+
+		if (bIsSlowed)
+			TF2_AddCondition(spectator, TFCond_Slowed, TFCondDuration_Infinite, spectator);
 	}
 	
 	if (hDuo_Hud_Alive[available] != null)
@@ -439,12 +416,12 @@ public void RequestFrame_SpawnLogic(any data)
 		ClearSyncHud(alive, hDuo_Hud_Alive[available]);
 	}
 	
-	Handle hPack = CreateDataPack();
-	WritePackCell(hPack, alive);
-	WritePackCell(hPack, spectator);
-	WritePackCell(hPack, class);
+	DataPack pack = new DataPack();
+	pack.WriteCell(alive);
+	pack.WriteCell(spectator);
+	pack.WriteCell(class);
 	
-	RequestFrame(RequestFrame_DelaySpecMove, hPack);
+	RequestFrame(RequestFrame_DelaySpecMove, pack);
 	
 	EmitSoundToClient(spectator, "items/powerup_pickup_vampire.wav");
 	EmitSoundToClient(alive, "items/powerup_pickup_vampire.wav");
@@ -458,43 +435,36 @@ public Action Timer_DisableAutoFire(Handle timer, any data)
 	bRemainFiring[data] = false;
 }
 
-public void RequestFrame_DelaySpecMove(any data)
+public void RequestFrame_DelaySpecMove(DataPack pack)
 {
-	ResetPack(data);
+	pack.Reset();
 	
-	int alive = ReadPackCell(data);
-	int spectator = ReadPackCell(data);
-	TFClassType class = ReadPackCell(data);
+	int alive = pack.ReadCell();
+	int spectator = pack.ReadCell();
+	TFClassType class = pack.ReadCell();
 	
-	CloseHandle(data);
+	delete pack;
 	
 	if (class == TFClass_Engineer)
 	{
 		int obj = -1;
 		while ((obj = FindEntityByClassname(obj, "obj_*")) != -1)
-		{
 			if (GetEntPropEnt(obj, Prop_Send, "m_hBuilder") == alive)
-			{
 				SetBuilder(obj, spectator);
-			}
-		}
 	}
 	
 	bAllowJointeam[alive] = true;
 	TF2_ChangeClientTeam(alive, TFTeam_Spectator);
 	SetEntPropEnt(alive, Prop_Send, "m_hObserverTarget", spectator);
+	bAllowJointeam[alive] = false;
 }
 
 int GetPlayerActiveSlot(int client)
 {
 	for (int i = 0; i <= 5; i++)
-	{
 		if (GetEntPropEnt(client, Prop_Data, "m_hActiveWeapon") == GetPlayerWeaponSlot(client, i))
-		{
 			return i;
-		}
-	}
-	
+		
 	return -1;
 }
 
@@ -568,21 +538,20 @@ public void OnRoundStart(Handle event, const char[] name, bool dontBroadcast)
 
 public Action OnJoinTeam(int client, const char[] command, int argc)
 {
+	if (!IsInDuo(client))
+	{
+		CPrintToChat(client, "%s {aliceblue} You cannot join a team unless you're a part of a duo team.", PLUGIN_TAG);
+		return Plugin_Handled;
+	}
+
 	if (!bAllowJointeam[client])
 	{
-		if (!IsInDuo(client))
-		{
-			CPrintToChat(client, "%s {aliceblue} You cannot join a team unless you're a part of a duo team.", PLUGIN_TAG);
-		}
-		else if (IsDuoSpec(client))
-		{
+		if (IsDuoSpec(client))
 			CPrintToChat(client, "%s {aliceblue} You cannot join a team unless you're the active player.", PLUGIN_TAG);
-		}
-		
+				
 		return Plugin_Handled;
 	}
 	
-	bAllowJointeam[client] = false;
 	return Plugin_Continue;
 }
 
@@ -625,12 +594,8 @@ bool IsInDuo(int client)
 int GetDuoID(int client)
 {
 	for (int i = 0; i < MAX_GROUPS; i++)
-	{
 		if (bDuo_IsInUse[i] && (iDuo_Requester[i] == client || iDuo_Requested[i] == client))
-		{
 			return i;
-		}
-	}
 	
 	return -1;
 }
@@ -667,14 +632,12 @@ public void OnClientDisconnect(int client)
 	int available = GetDuoID(client);
 	
 	if (available != -1)
-	{
 		NullDuoGroup(available, true);
-	}
 }
 
 public Action OpenStartMenu(int client, int args)
 {
-	DisplayMenu(hStart, client, MENU_TIME_FOREVER);
+	hStart.Display(client, MENU_TIME_FOREVER);
 	return Plugin_Handled;
 }
 
@@ -689,9 +652,7 @@ public Action SplitDuoGroup(int client, int args)
 	int available = GetDuoID(client);
 	
 	if (available != -1)
-	{
 		NullDuoGroup(available);
-	}
 	
 	return Plugin_Handled;
 }
@@ -704,7 +665,7 @@ public Action QueueForGroup(int client, int args)
 		return Plugin_Handled;
 	}
 	
-	PushStackCell(hQueueStack, GetClientUserId(client));
+	hQueueStack.Push(GetClientUserId(client));
 	CPrintToChat(client, "%s {aliceblue}You have been added to random queue.", PLUGIN_TAG);
 	
 	return Plugin_Handled;
@@ -712,17 +673,15 @@ public Action QueueForGroup(int client, int args)
 
 public Action PairQueuePlayers(Handle timer)
 {
-	if (IsStackEmpty(hQueueStack))
-	{
+	if (hQueueStack.Empty)
 		return Plugin_Continue;
-	}
 	
 	int iRequester_id; int iRequested_id;
-	if (PopStackCell(hQueueStack, iRequester_id))
+	if (hQueueStack.Pop(iRequester_id))
 	{
-		if (!PopStackCell(hQueueStack, iRequested_id))
+		if (!hQueueStack.Pop(iRequested_id))
 		{
-			PushStackCell(hQueueStack, iRequester_id);
+			hQueueStack.Push(iRequester_id);
 			return Plugin_Continue;
 		}
 		
@@ -737,8 +696,11 @@ public Action PairQueuePlayers(Handle timer)
 		}
 		else
 		{
-			if (iRequester > 0)PushStackCell(hQueueStack, iRequester_id);
-			if (iRequested > 0)PushStackCell(hQueueStack, iRequested_id);
+			if (iRequester > 0)
+				hQueueStack.Push(iRequester_id);
+			
+			if (iRequested > 0)
+				hQueueStack.Push(iRequested_id);
 		}
 	}
 	
@@ -754,33 +716,15 @@ void NullDuoGroup(int available, bool bDisconnected = false)
 	iDuo_Requester[available] = 0;
 	iDuo_Requested[available] = 0;
 	
-	if (hDuo_Menu_Spectator[available] != null)
-	{
-		CloseHandle(hDuo_Menu_Spectator[available]);
-		hDuo_Menu_Spectator[available] = null;
-	}
-	
-	if (hDuo_Hud_Alive[available] != null)
-	{
-		CloseHandle(hDuo_Hud_Alive[available]);
-		hDuo_Hud_Alive[available] = null;
-	}
+	delete hDuo_Menu_Spectator[available];
+	delete hDuo_Hud_Alive[available];
 	
 	iDuo_Spectating[available] = 0;
 	bDuo_IsInUse[available] = false;
 	iDuo_SwitchTime[available] = 0;
 	
-	if (hDuo_SwitchTimer[available] != null)
-	{
-		CloseHandle(hDuo_SwitchTimer[available]);
-		hDuo_SwitchTimer[available] = null;
-	}
-	
-	if (hCooldownArray[available] != null)
-	{
-		CloseHandle(hCooldownArray[available]);
-		hCooldownArray[available] = null;
-	}
+	delete hDuo_SwitchTimer[available];
+	delete hCooldownArray[available];
 	
 	if (bDisconnected)
 	{
@@ -826,16 +770,12 @@ void NullDuoGroup(int available, bool bDisconnected = false)
 			}
 		}
 	}
-	
-	
 }
 
 public Action OpenDuoMenu(int client, int args)
 {
 	if (!IsClientInGame(client))
-	{
 		return Plugin_Handled;
-	}
 	
 	DisplayDuoMenu(client);
 	return Plugin_Handled;
@@ -843,15 +783,13 @@ public Action OpenDuoMenu(int client, int args)
 
 void DisplayDuoMenu(int client)
 {
-	Handle hMenu = CreateMenu(MenuHandle_OnSelectDuoPartner);
-	SetMenuTitle(hMenu, "Pick a duo partner:");
+	Menu menu = new Menu(MenuHandle_OnSelectDuoPartner);
+	menu.SetTitle("Pick a duo partner:");
 	
 	for (int i = 1; i <= MaxClients; i++)
 	{
 		if (!IsClientInGame(i) || IsFakeClient(i) || client == i || IsInDuo(i))
-		{
 			continue;
-		}
 		
 		char sName[MAX_NAME_LENGTH];
 		GetClientName(i, sName, sizeof(sName));
@@ -859,15 +797,13 @@ void DisplayDuoMenu(int client)
 		char sID[12];
 		IntToString(GetClientUserId(i), sID, sizeof(sID));
 		
-		AddMenuItem(hMenu, sID, sName);
+		menu.AddItem(sID, sName);
 	}
 	
-	if (GetMenuItemCount(hMenu) < 1)
-	{
-		AddMenuItem(hMenu, "", "[Not available]", ITEMDRAW_DISABLED);
-	}
+	if (menu.ItemCount < 1)
+		menu.AddItem("", "[Not available]", ITEMDRAW_DISABLED);
 	
-	DisplayMenu(hMenu, client, MENU_TIME_FOREVER);
+	menu.Display(client, MENU_TIME_FOREVER);
 }
 
 public int MenuHandle_OnSelectDuoPartner(Menu menu, MenuAction action, int param1, int param2)
@@ -889,20 +825,21 @@ public int MenuHandle_OnSelectDuoPartner(Menu menu, MenuAction action, int param
 			
 			RequestTargetDuo(target, param1);
 		}
-		case MenuAction_End:CloseHandle(menu);
+		case MenuAction_End:
+			delete menu;
 	}
 }
 
 void RequestTargetDuo(int client, int requester)
 {
-	Menu hMenu = CreateMenu(MenuHandle_OnRequestDuo);
-	SetMenuTitle(hMenu, "Duo request from '%N': ", requester);
+	Menu menu = new Menu(MenuHandle_OnRequestDuo);
+	menu.SetTitle("Duo request from '%N': ", requester);
 	
-	AddMenuItem(hMenu, "Yes", "Yes");
-	AddMenuItem(hMenu, "No", "No");
+	menu.AddItem("Yes", "Yes");
+	menu.AddItem("No", "No");
 	
-	PushMenuInt(hMenu, "requester", GetClientUserId(requester));
-	DisplayMenu(hMenu, client, MENU_TIME_FOREVER);
+	PushMenuInt(menu, "requester", GetClientUserId(requester));
+	menu.Display(client, MENU_TIME_FOREVER);
 }
 
 public int MenuHandle_OnRequestDuo(Menu menu, MenuAction action, int param1, int param2)
@@ -935,20 +872,21 @@ public int MenuHandle_OnRequestDuo(Menu menu, MenuAction action, int param1, int
 				}
 			}
 		}
-		case MenuAction_End:CloseHandle(menu);
+		case MenuAction_End:
+			delete menu;
 	}
 }
 
 void ConfirmPosition(int requester, int requested)
 {
-	Menu hMenu = CreateMenu(MenuHandle_ConfirmPosition);
-	SetMenuTitle(hMenu, "Pick a position:");
+	Menu menu = new Menu(MenuHandle_ConfirmPosition);
+	menu.SetTitle("Pick a position:");
 	
-	AddMenuItem(hMenu, "Player", "Player");
-	AddMenuItem(hMenu, "Partner", "Partner");
+	menu.AddItem("Player", "Player");
+	menu.AddItem("Partner", "Partner");
 	
-	PushMenuInt(hMenu, "requested", requested);
-	DisplayMenu(hMenu, requester, MENU_TIME_FOREVER);
+	PushMenuInt(menu, "requested", requested);
+	menu.Display(requester, MENU_TIME_FOREVER);
 }
 
 public int MenuHandle_ConfirmPosition(Menu menu, MenuAction action, int param1, int param2)
@@ -971,7 +909,8 @@ public int MenuHandle_ConfirmPosition(Menu menu, MenuAction action, int param1, 
 				AssignDuoClients(requested, param1);
 			}
 		}
-		case MenuAction_End:CloseHandle(menu);
+		case MenuAction_End:
+			delete menu;
 	}
 }
 
@@ -990,11 +929,11 @@ void AssignDuoClients(int requester, int requested)
 	
 	if (g_MapType != TF2GameType_Arena)
 	{
-		iDuo_SwitchTime[available] = GetConVarInt(hConVar_SwitchTime);
+		iDuo_SwitchTime[available] = GetConVarInt(convar_SwitchTime);
 		hDuo_SwitchTimer[available] = CreateTimer(1.0, Timer_OnSwitchDuo, available, TIMER_REPEAT);
 	}
 	
-	hCooldownArray[available] = CreateArray(ByteCountToCells(256));
+	hCooldownArray[available] = new ArrayList(ByteCountToCells(256));
 	
 	TFTeam team = view_as<TFTeam>(GetRandomInt(2, 3));
 	bAllowJointeam[requester] = true;
@@ -1004,6 +943,7 @@ void AssignDuoClients(int requester, int requested)
 	
 	bAllowJointeam[requested] = true;
 	TF2_ChangeClientTeam(requested, TFTeam_Spectator);
+	bAllowJointeam[requested] = false;
 	
 	SetEntPropEnt(requested, Prop_Send, "m_hObserverTarget", requester);
 }
@@ -1021,7 +961,7 @@ public Action Timer_OnSwitchDuo(Handle timer, any data)
 	
 	if (iDuo_SwitchTime[available] <= 0)
 	{
-		iDuo_SwitchTime[available] = GetConVarInt(hConVar_SwitchTime);
+		iDuo_SwitchTime[available] = GetConVarInt(convar_SwitchTime);
 		SwitchDuo(available);
 	}
 }
@@ -1057,38 +997,32 @@ int GetDuoAlivePlayer(int available)
 
 void RedisplayPartnerMenu(int available)
 {
-	if (hDuo_Menu_Spectator[available] != null)
-	{
-		CloseHandle(hDuo_Menu_Spectator[available]);
-		hDuo_Menu_Spectator[available] = null;
-	}
-	
+	delete hDuo_Menu_Spectator[available];
 	hDuo_Menu_Spectator[available] = GeneratePartnerMenu(available);
-	
-	DisplayMenu(hDuo_Menu_Spectator[available], iDuo_Spectating[available], MENU_TIME_FOREVER);
+	hDuo_Menu_Spectator[available].Display(iDuo_Spectating[available], MENU_TIME_FOREVER);
 	
 	RegenerateAliveHUDText(available);
 }
 
 Menu GeneratePartnerMenu(int available)
 {
-	Menu hMenu = CreateMenu(MenuHandle_PartnerMenu);
-	SetMenuTitle(hMenu, "Partner Menu\nPoints: %i", iDuo_Points[available]);
+	Menu menu = new Menu(MenuHandle_PartnerMenu);
+	menu.SetTitle("Partner Menu\nPoints: %i", iDuo_Points[available]);
 	
 	char sName[MAX_NAME_LENGTH]; int iCost; char sDisplay[MAX_NAME_LENGTH + 12];
-	for (int i = 0; i < GetArraySize(h_aDisplayNames); i++)
+	for (int i = 0; i < h_aDisplayNames.Length; i++)
 	{
-		GetArrayString(h_aDisplayNames, i, sName, sizeof(sName));
+		h_aDisplayNames.GetString(i, sName, sizeof(sName));
 		
-		GetTrieValue(h_tCost, sName, iCost);
+		h_tCost.GetValue(sName, iCost);
 		
 		Format(sDisplay, sizeof(sDisplay), "[%i] %s", iCost, sName);
 		
-		AddMenuItem(hMenu, sName, sDisplay);
+		menu.AddItem(sName, sDisplay);
 	}
 	
-	PushMenuInt(hMenu, "available", available);
-	return hMenu;
+	PushMenuInt(menu, "available", available);
+	return menu;
 }
 
 void RegenerateAliveHUDText(int available)
@@ -1098,8 +1032,7 @@ void RegenerateAliveHUDText(int available)
 	if (hDuo_Hud_Alive[available] != null)
 	{
 		ClearSyncHud(alive, hDuo_Hud_Alive[available]);
-		CloseHandle(hDuo_Hud_Alive[available]);
-		hDuo_Hud_Alive[available] = null;
+		delete hDuo_Hud_Alive[available];
 	}
 	
 	hDuo_Hud_Alive[available] = CreateHudSynchronizer();
@@ -1124,25 +1057,25 @@ public int MenuHandle_PartnerMenu(Menu menu, MenuAction action, int param1, int 
 			}
 			
 			int iCost;
-			GetTrieValue(h_tCost, sName, iCost);
+			h_tCost.GetValue(sName, iCost);
 			
 			char sType[32];
-			GetTrieString(h_tType, sName, sType, sizeof(sType));
+			h_tType.GetString(sName, sType, sizeof(sType));
 			
 			int iIndex = -1;
-			GetTrieValue(h_tIndex, sName, iIndex);
+			h_tIndex.GetValue(sName, iIndex);
 			
 			char sIndexName[256];
-			GetTrieString(h_tName, sName, sIndexName, sizeof(sIndexName));
+			h_tName.GetString(sName, sIndexName, sizeof(sIndexName));
 			
 			float fValue;
-			GetTrieValue(h_tValue, sName, fValue);
+			h_tValue.GetValue(sName, fValue);
 			
 			float fDuration;
-			GetTrieValue(h_tDuration, sName, fDuration);
+			h_tDuration.GetValue(sName, fDuration);
 			
 			char sApply[256];
-			GetTrieString(h_tApply, sName, sApply, sizeof(sApply));
+			h_tApply.GetString(sName, sApply, sizeof(sApply));
 			
 			ActivateDuoPerk(available, param1, sName, iCost, sType, iIndex, sIndexName, fValue, fDuration, sApply);
 			
@@ -1172,7 +1105,7 @@ void ActivateDuoPerk(int available, int caster, const char[] name, int points, c
 		Handle hSync = CreateHudSynchronizer();
 		SetHudTextParams(0.0, 0.4, 3.0, 73, 205, 238, 255);
 		ShowSyncHudText(alive, hSync, "%s", name);
-		CloseHandle(hSync);
+		delete hSync;
 		
 		EmitSoundToClient(alive, "items/powerup_pickup_agility.wav");
 		EmitSoundToClient(caster, "items/powerup_pickup_agility.wav");
@@ -1191,7 +1124,7 @@ void ActivateDuoPerk(int available, int caster, const char[] name, int points, c
 		}
 		else if (StrEqual(type, "attribute"))
 		{
-			if (FindValueInArray(hCooldownArray[available], index) != -1)
+			if (hCooldownArray[available].FindValue(index) != -1)
 			{
 				return;
 			}
@@ -1242,22 +1175,21 @@ void ActivateDuoPerk(int available, int caster, const char[] name, int points, c
 				int remove = -1;
 				if (StrEqual(apply, "client"))
 				{
-					remove = PushArrayCell(hCooldownArray[available], index);
+					remove = hCooldownArray[available].Push(index);
 				}
 				else if (StrEqual(apply, "weapons"))
 				{
-					remove = PushArrayString(hCooldownArray[available], index_name);
+					remove = hCooldownArray[available].PushString(index_name);
 				}
 				
-				Handle hPack = CreateDataPack();
-				WritePackCell(hPack, GetClientUserId(alive));
-				WritePackCell(hPack, index);
-				WritePackString(hPack, index_name);
-				WritePackString(hPack, apply);
-				WritePackCell(hPack, available);
-				WritePackCell(hPack, remove);
-				
-				CreateTimer(duration, Timer_OnRemoveAttribute, hPack, TIMER_FLAG_NO_MAPCHANGE);
+				DataPack pack;
+				CreateDataTimer(duration, Timer_OnRemoveAttribute, pack, TIMER_FLAG_NO_MAPCHANGE);
+				pack.WriteCell(GetClientUserId(alive));
+				pack.WriteCell(index);
+				pack.WriteString(index_name);
+				pack.WriteString(apply);
+				pack.WriteCell(available);
+				pack.WriteCell(remove);
 			}
 		}
 		else if (StrEqual(type, "custom"))
@@ -1267,23 +1199,23 @@ void ActivateDuoPerk(int available, int caster, const char[] name, int points, c
 	}
 }
 
-public Action Timer_OnRemoveAttribute(Handle timer, any data)
+public Action Timer_OnRemoveAttribute(Handle timer, DataPack pack)
 {
-	ResetPack(data);
+	pack.Reset();
 	
-	int client = GetClientOfUserId(ReadPackCell(data));
-	int index = ReadPackCell(data);
+	int client = GetClientOfUserId(pack.ReadCell());
+	int index = pack.ReadCell();
 	
 	char sName[256];
-	ReadPackString(data, sName, sizeof(sName));
+	pack.ReadString(sName, sizeof(sName));
 	
 	char sApply[32];
-	ReadPackString(data, sApply, sizeof(sApply));
+	pack.ReadString(sApply, sizeof(sApply));
 	
-	int available = ReadPackCell(data);
-	int remove = ReadPackCell(data);
+	int available = pack.ReadCell();
+	int remove = pack.ReadCell();
 	
-	CloseHandle(data);
+	delete pack;
 	
 	if (StrEqual(sApply, "client"))
 	{
@@ -1318,13 +1250,8 @@ public Action Timer_OnRemoveAttribute(Handle timer, any data)
 	
 	if (remove != -1)
 	{
-		RemoveFromArray(hCooldownArray[available], remove);
+		hCooldownArray[available].Erase(remove);
 	}
-}
-
-public void OnEntityDestroyed(int entity)
-{
-	
 }
 
 void TF2_SwitchtoSlot(int client, int slot)
@@ -1385,26 +1312,18 @@ public Action OnPlayerRunCmd(int client, int &buttons, int &impulse, float vel[3
 		}
 		
 		if (buttons & IN_ATTACK || buttons & IN_ATTACK2)
-		{
 			InAttack[client] = true;
-		}
 		else
-		{
 			InAttack[client] = false;
-		}
 	}
 	
 	if (bRemainFiring[client])
-	{
 		buttons |= IN_ATTACK;
-		return Plugin_Changed;
-	}
 	
 	if (bRemainZoomed[client])
 	{
 		buttons |= IN_ZOOM;
 		bRemainZoomed[client] = false;
-		return Plugin_Changed;
 	}
 	
 	return Plugin_Continue;
@@ -1413,33 +1332,24 @@ public Action OnPlayerRunCmd(int client, int &buttons, int &impulse, float vel[3
 public void OnGameFrame()
 {
 	for (int i = 1; i <= MaxClients; i++)
-	{
-		if (fRapidFire[i] != 1.0 && InAttack[i])
-		{
-			if (IsClientInGame(i) && IsPlayerAlive(i))
-			{
-				ModRateOfFire(i, fRapidFire[i]);
-			}
-		}
-	}
+		if (IsClientInGame(i) && IsPlayerAlive(i) && fRapidFire[i] != 1.0 && InAttack[i])
+			ModRateOfFire(i, fRapidFire[i]);
 }
 
 void ModRateOfFire(int client, float Amount)
 {
 	int entity = GetEntDataEnt2(client, OffAW);
+	
 	if (entity != -1)
 	{
 		float m_flNextPrimaryAttack = GetEntPropFloat(entity, Prop_Send, "m_flNextPrimaryAttack");
 		float m_flNextSecondaryAttack = GetEntPropFloat(entity, Prop_Send, "m_flNextSecondaryAttack");
-		if (Amount > 12)
-		{
-			SetEntPropFloat(entity, Prop_Send, "m_flPlaybackRate", 12.0);
-		}
-		else
-		{
-			SetEntPropFloat(entity, Prop_Send, "m_flPlaybackRate", Amount);
-		}
 		
+		if (Amount > 12)
+			SetEntPropFloat(entity, Prop_Send, "m_flPlaybackRate", 12.0);
+		else
+			SetEntPropFloat(entity, Prop_Send, "m_flPlaybackRate", Amount);
+				
 		float GameTime = GetGameTime();
 		
 		float PeTime = (m_flNextPrimaryAttack - GameTime) - ((Amount - 1.0) / 50);
@@ -1452,7 +1362,6 @@ void ModRateOfFire(int client, float Amount)
 	}
 }
 
-
 public Action SetPoints(int client, int args)
 {
 	char sArg[64];
@@ -1463,7 +1372,6 @@ public Action SetPoints(int client, int args)
 	int points = StringToInt(sArg2);
 	
 	int target = FindTarget(client, sArg, true, false);
-	
 	int available = GetDuoID(target);
 	
 	if (available != -1)
@@ -1478,12 +1386,10 @@ public Action SetPoints(int client, int args)
 void AddDuoPoints(int available, int points)
 {
 	iDuo_Points[available] += points;
-	int max = GetConVarInt(hConVar_MaxPoints);
+	int max = GetConVarInt(convar_MaxPoints);
 	
 	if (iDuo_Points[available] > max)
-	{
 		iDuo_Points[available] = max;
-	}
 }
 
 void SwitchDuo(int available)
@@ -1495,12 +1401,13 @@ void SwitchDuo(int available)
 	iDuo_SpawnCache[available][1] = spectator;
 	
 	TFClassType class = TF2_GetPlayerClass(alive);
-	
 	TFTeam team = TF2_GetClientTeam(alive);
+
 	bAllowJointeam[spectator] = true;
+
 	TF2_ChangeClientTeam(spectator, team);
 	TF2_SetPlayerClass(spectator, class);
-	CreateTimer(0.5, Timer_RespawnPlayer, spectator);
+	bAllowJointeam[spectator] = false;
 	
 	iDuo_Spectating[available] = alive;
 }
@@ -1508,19 +1415,20 @@ void SwitchDuo(int available)
 public Action Timer_RespawnPlayer(Handle timer, any data)
 {
 	TF2_RespawnPlayer(data);
+	bAllowJointeam[data] = true;
 }
 
-Handle GenerateStartMenu()
+Menu GenerateStartMenu()
 {
-	Handle hMenu = CreateMenu(MenuHandle_StartMenu);
-	SetMenuTitle(hMenu, "Duo Fortress 2");
+	Menu menu = new Menu(MenuHandle_StartMenu);
+	menu.SetTitle("Duo Fortress 2");
 	
-	AddMenuItem(hMenu, "!details", "Details");
-	AddMenuItem(hMenu, "!duo", "Start a Duo");
-	AddMenuItem(hMenu, "!queue", "Queue for a Duo");
-	AddMenuItem(hMenu, "!split", "Split a Duo");
+	menu.AddItem("!details", "Details");
+	menu.AddItem("!duo", "Start a Duo");
+	menu.AddItem("!queue", "Queue for a Duo");
+	menu.AddItem("!split", "Split a Duo");
 	
-	return hMenu;
+	return menu;
 }
 
 public int MenuHandle_StartMenu(Menu menu, MenuAction action, int param1, int param2)
@@ -1549,51 +1457,44 @@ void ReloadPerksConfig()
 	char sPath[PLATFORM_MAX_PATH];
 	BuildPath(Path_SM, sPath, sizeof(sPath), "configs/duo_perks.cfg");
 	
-	Handle hKV = CreateKeyValues("duo_perks");
+	KeyValues kv = new KeyValues("duo_perks");
 	
-	if (!FileToKeyValues(hKV, sPath))
-	{
+	if (!kv.ImportFromFile(sPath) || !kv.GotoFirstSubKey())
 		return;
-	}
 	
-	if (!KvGotoFirstSubKey(hKV))
-	{
-		return;
-	}
-	
-	ClearArray(h_aDisplayNames);
-	ClearTrie(h_tCost);
-	ClearTrie(h_tType);
-	ClearTrie(h_tIndex);
-	ClearTrie(h_tName);
-	ClearTrie(h_tValue);
-	ClearTrie(h_tDuration);
-	ClearTrie(h_tApply);
-	
+	h_aDisplayNames.Clear();
+	h_tCost.Clear();
+	h_tType.Clear();
+	h_tIndex.Clear();
+	h_tName.Clear();
+	h_tValue.Clear();
+	h_tDuration.Clear();
+	h_tApply.Clear();
+
 	char sDisplayName[MAX_NAME_LENGTH]; int iCost; char sType[32]; int iIndex; char sIndexName[256]; float fValue; float fDuration; char sApply[32];
 	do {
-		KvGetSectionName(hKV, sDisplayName, sizeof(sDisplayName));
+		kv.GetSectionName(sDisplayName, sizeof(sDisplayName));
 		
-		iCost = KvGetNum(hKV, "cost");
-		KvGetString(hKV, "type", sType, sizeof(sType));
-		iIndex = KvGetNum(hKV, "index");
-		KvGetString(hKV, "name", sIndexName, sizeof(sIndexName));
-		fValue = KvGetFloat(hKV, "value");
-		fDuration = KvGetFloat(hKV, "duration");
-		KvGetString(hKV, "apply", sApply, sizeof(sApply));
+		iCost = kv.GetNum("cost");
+		kv.GetString("type", sType, sizeof(sType));
+		iIndex = kv.GetNum("index");
+		kv.GetString("name", sIndexName, sizeof(sIndexName));
+		fValue = kv.GetFloat("value");
+		fDuration = kv.GetFloat("duration");
+		kv.GetString("apply", sApply, sizeof(sApply));
 		
-		PushArrayString(h_aDisplayNames, sDisplayName);
-		SetTrieValue(h_tCost, sDisplayName, iCost);
-		SetTrieString(h_tType, sDisplayName, sType);
-		SetTrieValue(h_tIndex, sDisplayName, iIndex);
-		SetTrieString(h_tName, sDisplayName, sIndexName);
-		SetTrieValue(h_tValue, sDisplayName, fValue);
-		SetTrieValue(h_tDuration, sDisplayName, fDuration);
-		SetTrieString(h_tApply, sDisplayName, sApply);
+		h_aDisplayNames.PushString(sDisplayName);
+		h_tCost.SetValue(sDisplayName, iCost);
+		h_tType.SetString(sDisplayName, sType);
+		h_tIndex.SetValue(sDisplayName, iIndex);
+		h_tName.SetString(sDisplayName, sIndexName);
+		h_tValue.SetValue(sDisplayName, fValue);
+		h_tDuration.SetValue(sDisplayName, fDuration);
+		h_tApply.SetString(sDisplayName, sApply);
 		
-	} while (KvGotoNextKey(hKV));
+	} while (kv.GotoNextKey());
 	
-	CloseHandle(hKV);
+	delete kv;
 }
 
 /*
@@ -1688,7 +1589,7 @@ void DisplayDetailStart(int client, int menu_item)
 		}
 	}
 	
-	CloseHandle(hPanel);
+	delete hPanel;
 }
 
 public int PanelHandler_Display_1(Handle menu, MenuAction action, int param1, int param2)
